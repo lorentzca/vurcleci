@@ -1,0 +1,76 @@
+defaults: &defaults
+  working_directory: /tmp
+
+version: 2
+jobs:
+  get_cve_dictionary:
+    <<: *defaults
+    docker:
+      - image: vuls/go-cve-dictionary
+    steps:
+      - run:
+          name: Get CVE dictionary
+          command: go-cve-dictionary fetchnvd -last2y -dbpath "/tmp/cve.sqlite3"
+      - persist_to_workspace:
+          root: .
+          paths:
+            - cve.sqlite3
+
+  get_oval_dictionary:
+    <<: *defaults
+    docker:
+      - image: vuls/goval-dictionary
+    steps:
+      - run:
+          # Select OS
+          name: Get OVAL dictionary
+          command: goval-dictionary fetch-ubuntu -dbpath "/tmp/oval.sqlite3" 16
+      - persist_to_workspace:
+          root: .
+          paths:
+            - oval.sqlite3
+
+  report_vulnerability:
+    <<: *defaults
+    docker:
+      - image: vuls/vuls:latest
+    steps:
+      - attach_workspace:
+          at: /tmp
+      - add_ssh_keys:
+          # Set fingerprint
+          # https://circleci.com/docs/2.0/add-ssh-key/
+          fingerprints:
+            - "<fingerprint>"
+      - run:
+          name: Don't check StrictHostKey
+          command: echo "StrictHostKeyChecking no" >> /root/.ssh/config
+      - run:
+          # Download your config.toml
+          name: Download config.toml
+          command: wget -O /tmp/config.toml https://gist.githubusercontent.com/<User name>/<123456qwerty>/raw/config.toml
+      - run:
+          name: Scan vulnerability
+          command: vuls scan -ssh-config -config=/tmp/config.toml -results-dir=/tmp/result
+      - run:
+          mame: Report vulnerability
+          command: vuls report -cvedb-path=/tmp/cve.sqlite3 -ovaldb-path=/tmp/oval.sqlite3 -format-short-text -cvss-over=7.0 -to-slack -results-dir=/tmp/result -config=/tmp/config.toml
+
+workflows:
+  version: 2
+  vulnerability_scan:
+    triggers:
+      - schedule:
+          # 10:00 AM JST
+          cron: "0 1 * * *"
+          filters:
+            branches:
+              only:
+                - master
+    jobs:
+      - get_cve_dictionary
+      - get_oval_dictionary
+      - report_vulnerability:
+          requires:
+            - get_cve_dictionary
+            - get_oval_dictionary
